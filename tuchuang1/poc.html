@@ -215,24 +215,49 @@
 
         // Dynamic scan: enumerate window properties for Java bridge objects
         log('[*] Dynamic enumeration of window properties...', 'info');
+        var BROWSER_BUILTINS = [
+            'location','navigator','document','console','performance','screen',
+            'history','self','window','frames','parent','top','external','chrome',
+            'visualViewport','clientInformation','styleMedia','speechSynthesis',
+            'caches','cookieStore','crypto','indexedDB','scheduler',
+            'crossOriginIsolated','globalThis','JSON','Math','Intl','Atomics',
+            'Reflect','CSS','customElements','navigation','locationbar','menubar',
+            'personalbar','scrollbars','statusbar','toolbar','trustedTypes',
+            'sessionStorage','localStorage','WebAssembly','closed','origin',
+            'length','opener','isSecureContext','fence','sharedStorage',
+            'documentPictureInPicture','launchQueue','onappinstalled',
+            'onbeforeinstallprompt','getScreenDetails','queryLocalFonts',
+            'showDirectoryPicker','showOpenFilePicker','showSaveFilePicker',
+            'originAgentCluster','credentialless','name','customElements',
+            'GPUBufferUsage','GPUColorWrite','GPUMapMode','GPUShaderStage',
+            'GPUTextureUsage','AbortController','AbortSignal','AbstractRange',
+            'Attr','Blob','BroadcastChannel','ByteLengthQueuingStrategy',
+            'CSSAnimation','URL','URLSearchParams','XMLHttpRequest',
+            'alert','atob','btoa','blur','clearInterval','clearTimeout',
+            'close','confirm','createImageBitmap','fetch','find','focus',
+            'getComputedStyle','getSelection','matchMedia','moveBy','moveTo',
+            'open','postMessage','print','prompt','queueMicrotask',
+            'reportError','requestAnimationFrame','requestIdleCallback',
+            'resizeBy','resizeTo','scroll','scrollBy','scrollTo','setInterval',
+            'setTimeout','stop','structuredClone','getScreenDetails',
+            'innerHeight','innerWidth','outerHeight','outerWidth',
+            'pageXOffset','pageYOffset','screenLeft','screenTop',
+            'screenX','screenY','scrollX','scrollY','devicePixelRatio'
+        ];
         try {
             var props = Object.getOwnPropertyNames(window);
             props.forEach(function(p) {
                 try {
+                    if (BROWSER_BUILTINS.indexOf(p) !== -1) return;
+                    if (/^on[a-z]/.test(p)) return;            // event handlers
+                    if (/^[A-Z][A-Za-z]+$/.test(p) && typeof window[p] === 'function') return; // constructors
                     var v = window[p];
-                    if (v && typeof v === 'object' && v.constructor &&
-                        v.constructor.toString().indexOf('native') !== -1) {
+                    if (v && typeof v === 'object') {
                         var already = report.bridges.some(function(b) { return b.name === p; });
-                        if (!already && p !== 'location' && p !== 'navigator' &&
-                            p !== 'document' && p !== 'console' && p !== 'performance' &&
-                            p !== 'screen' && p !== 'history' && p !== 'self' &&
-                            p !== 'window' && p !== 'frames' && p !== 'parent' &&
-                            p !== 'top' && p !== 'external' && p !== 'chrome' &&
-                            p !== 'visualViewport' && p !== 'clientInformation' &&
-                            p !== 'styleMedia' && p !== 'speechSynthesis' &&
-                            p !== 'caches' && p !== 'cookieStore' &&
-                            p !== 'crypto' && p !== 'indexedDB' &&
-                            p !== 'scheduler' && p !== 'crossOriginIsolated') {
+                        if (already) return;
+                        var hasFn = false;
+                        try { for (var k in v) { if (typeof v[k] === 'function') { hasFn = true; break; } } } catch(e) {}
+                        if (hasFn) {
                             report.bridges.push({ name: p, type: typeof v, source: 'dynamic-scan', isNativeObject: true });
                             log('[+] FOUND (dynamic): window.' + p, 'found');
                             found++;
@@ -259,38 +284,43 @@
             var obj = window[bridge.name];
             if (!obj) return;
 
-            // Check known methods
-            KNOWN_METHODS.forEach(function(m) {
-                try {
-                    if (typeof obj[m.name] === 'function') {
-                        report.methods.push({
-                            bridge: bridge.name,
-                            method: m.name,
-                            risk: m.risk,
-                            desc: m.desc,
-                            callable: true
-                        });
-                        var riskTag = m.risk === 'high' ? '[!!!]' : m.risk === 'med' ? '[!!]' : '[!]';
-                        var riskCls = m.risk === 'high' ? 'found' : m.risk === 'med' ? 'warn' : 'info';
-                        log(riskTag + ' ' + bridge.name + '.' + m.name + '() — ' + m.desc, riskCls);
-                        found++;
-                    }
-                } catch(e) {}
-            });
+            log('[*] Scanning ' + bridge.name + '...', 'info');
 
-            // Try to enumerate unknown methods
+            if (bridge.name === 'webkit') {
+                KNOWN_METHODS.forEach(function(m) {
+                    try {
+                        if (typeof obj[m.name] === 'function') {
+                            report.methods.push({
+                                bridge: bridge.name,
+                                method: m.name,
+                                risk: m.risk,
+                                desc: m.desc,
+                                callable: true
+                            });
+                            var riskTag = m.risk === 'high' ? '[!!!]' : m.risk === 'med' ? '[!!]' : '[!]';
+                            var riskCls = m.risk === 'high' ? 'found' : m.risk === 'med' ? 'warn' : 'info';
+                            log(riskTag + ' ' + bridge.name + '.' + m.name + '() — ' + m.desc, riskCls);
+                            found++;
+                        }
+                    } catch(e) {}
+                });
+            }
+
+            // Enumerate all methods (for android / dynamic bridges, discover everything)
             try {
-                var knownNames = KNOWN_METHODS.map(function(m) { return m.name; });
+                var knownNames = (bridge.name === 'webkit') ? KNOWN_METHODS.map(function(m) { return m.name; }) : [];
                 for (var k in obj) {
-                    if (knownNames.indexOf(k) === -1 && typeof obj[k] === 'function') {
+                    if (typeof obj[k] === 'function' && knownNames.indexOf(k) === -1) {
+                        var argCount = -1;
+                        try { argCount = obj[k].length; } catch(e) {}
                         report.methods.push({
                             bridge: bridge.name,
                             method: k,
                             risk: 'unknown',
-                            desc: 'Undocumented method (discovered by enumeration)',
+                            desc: 'Discovered by enumeration' + (argCount >= 0 ? ' (args: ' + argCount + ')' : ''),
                             callable: true
                         });
-                        log('[?] ' + bridge.name + '.' + k + '() — unknown method', 'warn');
+                        log('[?] ' + bridge.name + '.' + k + '(' + (argCount >= 0 ? argCount + ' args' : '') + ') — discovered', 'warn');
                         found++;
                     }
                 }
@@ -378,6 +408,29 @@
                     note: 'Can modify device telephoneCallInfoStatus or navigate to device list'
                 });
                 log('[!!!] useVas() is callable — device state modification possible', 'found');
+            }
+        } catch(e) {}
+
+        // Probe 5: window.android bridge — enumerate and report
+        try {
+            if (window.android && typeof window.android === 'object') {
+                var androidMethods = [];
+                for (var k in window.android) {
+                    if (typeof window.android[k] === 'function') androidMethods.push(k);
+                }
+                probeResults.push({
+                    probe: 'android_bridge',
+                    status: androidMethods.length > 0 ? 'FOUND' : 'EMPTY',
+                    risk: androidMethods.length > 0 ? 'high' : 'low',
+                    methods: androidMethods,
+                    note: androidMethods.length + ' method(s) on window.android'
+                });
+                if (androidMethods.length > 0) {
+                    log('[!!!] window.android bridge has ' + androidMethods.length + ' method(s):', 'found');
+                    androidMethods.forEach(function(m) { log('      android.' + m + '()', 'found'); });
+                } else {
+                    log('[*] window.android exists but no enumerable methods', 'info');
+                }
             }
         } catch(e) {}
 
@@ -482,9 +535,18 @@
             if (p.status === 'LEAKED') {
                 d.className += ' found';
                 d.textContent = '[LEAK] ' + p.probe + ': ' + (p.preview || '').substring(0, 100);
-            } else if (p.status === 'CALLABLE') {
+            } else if (p.status === 'CALLABLE' || (p.status === 'FOUND' && p.risk === 'high')) {
                 d.className += ' warn';
                 d.textContent = '[RISK] ' + p.probe + ': ' + p.note;
+                if (p.methods && p.methods.length > 0) {
+                    p.methods.forEach(function(m) {
+                        var md = document.createElement('div');
+                        md.className = 'log-line found';
+                        md.style.paddingLeft = '16px';
+                        md.textContent = '→ ' + m + '()';
+                        list.appendChild(md);
+                    });
+                }
             } else {
                 d.className += ' dim';
                 d.textContent = '[OK] ' + p.probe + ': ' + p.status;
