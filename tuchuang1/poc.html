@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>JSBridge Security Scanner</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif;
+            background: #0d1117; color: #c9d1d9; padding: 16px;
+            font-size: 14px; line-height: 1.6;
+        }
+        h1 { font-size: 18px; color: #58a6ff; margin-bottom: 4px; }
+        .subtitle { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
+        .card {
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 8px; padding: 14px; margin-bottom: 12px;
+        }
+        .card-title {
+            font-size: 13px; font-weight: 600; margin-bottom: 8px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .badge {
+            display: inline-block; padding: 2px 8px; border-radius: 10px;
+            font-size: 11px; font-weight: 600;
+        }
+        .badge-red { background: #da3633; color: #fff; }
+        .badge-green { background: #238636; color: #fff; }
+        .badge-yellow { background: #9e6a03; color: #fff; }
+        .badge-gray { background: #30363d; color: #8b949e; }
+        .log-line {
+            font-family: "Cascadia Code", "Fira Code", monospace;
+            font-size: 12px; padding: 3px 0; border-bottom: 1px solid #21262d;
+            word-break: break-all;
+        }
+        .log-line:last-child { border-bottom: none; }
+        .found { color: #f85149; }
+        .safe { color: #3fb950; }
+        .info { color: #58a6ff; }
+        .warn { color: #d29922; }
+        .dim { color: #484f58; }
+        .summary-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+            margin-top: 8px;
+        }
+        .summary-item {
+            background: #0d1117; border-radius: 6px; padding: 10px;
+            text-align: center;
+        }
+        .summary-num { font-size: 24px; font-weight: 700; }
+        .summary-label { font-size: 11px; color: #8b949e; }
+        .method-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; border-bottom: 1px solid #21262d;
+        }
+        .method-item:last-child { border-bottom: none; }
+        .method-name { font-family: monospace; font-size: 12px; }
+        .risk-high { color: #f85149; }
+        .risk-med { color: #d29922; }
+        .risk-low { color: #8b949e; }
+        .btn {
+            display: block; width: 100%; padding: 12px; margin-top: 12px;
+            background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+            border-radius: 6px; font-size: 14px; text-align: center;
+            cursor: pointer;
+        }
+        .btn:active { background: #30363d; }
+        .collapsible { display: none; }
+        .collapsible.show { display: block; }
+        .toggle-btn {
+            background: none; border: none; color: #58a6ff;
+            font-size: 12px; cursor: pointer; padding: 4px 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>JSBridge Security Scanner</h1>
+<div class="subtitle">Target: com.jooan.smarteye.lenovo (乔安智连)</div>
+
+<div id="summary-card" class="card">
+    <div class="card-title">
+        <span id="scan-status">Scanning...</span>
+        <span id="scan-badge" class="badge badge-gray">PENDING</span>
+    </div>
+    <div id="summary-grid" class="summary-grid" style="display:none;"></div>
+</div>
+
+<div id="bridge-card" class="card" style="display:none;">
+    <div class="card-title">JSBridge Interfaces</div>
+    <div id="bridge-list"></div>
+</div>
+
+<div id="methods-card" class="card" style="display:none;">
+    <div class="card-title">Exposed Methods</div>
+    <div id="methods-list"></div>
+</div>
+
+<div id="probe-card" class="card" style="display:none;">
+    <div class="card-title">Active Probe Results</div>
+    <div id="probe-list"></div>
+</div>
+
+<div id="log-card" class="card">
+    <div class="card-title">
+        Scan Log
+        <button class="toggle-btn" onclick="toggleLog()">[toggle]</button>
+    </div>
+    <div id="log-container" class="collapsible show"></div>
+</div>
+
+<button class="btn" onclick="exportReport()">Export Report (JSON)</button>
+
+<script>
+(function() {
+    var report = {
+        timestamp: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        url: location.href,
+        bridges: [],
+        methods: [],
+        probes: [],
+        risk: 'UNKNOWN'
+    };
+
+    var logContainer = document.getElementById('log-container');
+
+    function log(msg, cls) {
+        var d = document.createElement('div');
+        d.className = 'log-line ' + (cls || 'dim');
+        d.textContent = msg;
+        logContainer.appendChild(d);
+    }
+
+    // =========================================================
+    // 1. Known JSBridge interface names to scan
+    // =========================================================
+    var KNOWN_BRIDGES = [
+        { name: 'webkit',       src: 'AndroidJsInterface (com.jooan.qiaoanzhilian)' },
+        { name: 'android',      src: 'Common Android bridge' },
+        { name: 'nativeBridge',  src: 'Generic native bridge' },
+        { name: 'JsBridge',     src: 'Generic JsBridge' },
+        { name: 'jsInterface',  src: 'Generic jsInterface' },
+        { name: 'Native',       src: 'Native bridge' },
+        { name: 'App',          src: 'App bridge' },
+        { name: 'jooan',        src: 'Jooan custom bridge' },
+        { name: 'QMUIBridge',   src: 'QMUI WebView bridge (assets/QMUIWebviewBridge.js)' },
+        { name: 'prompt',       src: 'Override prompt() bridge pattern' },
+    ];
+
+    // =========================================================
+    // 2. Known @JavascriptInterface methods for "webkit" bridge
+    // =========================================================
+    var KNOWN_METHODS = [
+        { name: 'goBack',                  risk: 'low',  desc: 'Close current page' },
+        { name: 'reBuyVas',                risk: 'med',  desc: 'Trigger re-purchase flow' },
+        { name: 'useVas',                  risk: 'high', desc: 'Activate VAS / modify device state' },
+        { name: 'depict',                  risk: 'med',  desc: 'Navigate to buy cloud/twecall activity' },
+        { name: 'twecallResult',           risk: 'high', desc: 'Launch WeChat MiniProgram with attacker-controlled userName/path' },
+        { name: 'OnlineService',           risk: 'med',  desc: 'Init customer service chat with arbitrary data' },
+        { name: 'toInstall',               risk: 'med',  desc: 'Navigate to install page' },
+        { name: 'toBack',                  risk: 'low',  desc: 'Trigger onBack callback' },
+        { name: 'analyticsReport',         risk: 'low',  desc: 'Send analytics event with JSON input' },
+        { name: 'updatePageTitle',         risk: 'low',  desc: 'Change activity title text' },
+        { name: 'leaveContactPage',        risk: 'low',  desc: 'Leave contact page callback' },
+        { name: 'weChatCycle',             risk: 'high', desc: 'Set global PayConstant.referer URL (persistent URL injection)' },
+        { name: 'getProductParams',        risk: 'high', desc: 'Leak user_id, token, device info, product params' },
+        { name: 'openFeedBack',            risk: 'low',  desc: 'Open feedback activity' },
+        { name: 'closeAppPage',            risk: 'med',  desc: 'Force close current activity' },
+        { name: 'receivedFreeCloudStorage', risk: 'med', desc: 'Navigate to main device list' },
+    ];
+
+    // =========================================================
+    // 3. Scan for JSBridge interfaces
+    // =========================================================
+    function scanBridges() {
+        log('[*] Phase 1: Scanning JSBridge interfaces...', 'info');
+        var found = 0;
+
+        KNOWN_BRIDGES.forEach(function(b) {
+            try {
+                var obj = window[b.name];
+                if (typeof obj !== 'undefined' && obj !== null) {
+                    var type = typeof obj;
+                    var isNative = false;
+                    try {
+                        isNative = obj.toString && obj.toString().indexOf('native') !== -1;
+                    } catch(e) {}
+
+                    if (b.name === 'prompt') return;
+
+                    var methodCount = 0;
+                    try {
+                        for (var k in obj) { methodCount++; }
+                    } catch(e) {}
+
+                    var entry = {
+                        name: b.name,
+                        type: type,
+                        source: b.src,
+                        isNativeObject: isNative,
+                        propertyCount: methodCount
+                    };
+                    report.bridges.push(entry);
+                    log('[+] FOUND: window.' + b.name + ' (' + type + ') — ' + b.src, 'found');
+                    found++;
+                } else {
+                    log('[-] window.' + b.name + ' — not present', 'dim');
+                }
+            } catch(e) {
+                log('[!] Error checking ' + b.name + ': ' + e.message, 'warn');
+            }
+        });
+
+        // Dynamic scan: enumerate window properties for Java bridge objects
+        log('[*] Dynamic enumeration of window properties...', 'info');
+        try {
+            var props = Object.getOwnPropertyNames(window);
+            props.forEach(function(p) {
+                try {
+                    var v = window[p];
+                    if (v && typeof v === 'object' && v.constructor &&
+                        v.constructor.toString().indexOf('native') !== -1) {
+                        var already = report.bridges.some(function(b) { return b.name === p; });
+                        if (!already && p !== 'location' && p !== 'navigator' &&
+                            p !== 'document' && p !== 'console' && p !== 'performance' &&
+                            p !== 'screen' && p !== 'history' && p !== 'self' &&
+                            p !== 'window' && p !== 'frames' && p !== 'parent' &&
+                            p !== 'top' && p !== 'external' && p !== 'chrome' &&
+                            p !== 'visualViewport' && p !== 'clientInformation' &&
+                            p !== 'styleMedia' && p !== 'speechSynthesis' &&
+                            p !== 'caches' && p !== 'cookieStore' &&
+                            p !== 'crypto' && p !== 'indexedDB' &&
+                            p !== 'scheduler' && p !== 'crossOriginIsolated') {
+                            report.bridges.push({ name: p, type: typeof v, source: 'dynamic-scan', isNativeObject: true });
+                            log('[+] FOUND (dynamic): window.' + p, 'found');
+                            found++;
+                        }
+                    }
+                } catch(e) {}
+            });
+        } catch(e) {
+            log('[!] Dynamic scan error: ' + e.message, 'warn');
+        }
+
+        log('[*] Phase 1 complete: ' + found + ' bridge(s) found', found > 0 ? 'found' : 'safe');
+        return found;
+    }
+
+    // =========================================================
+    // 4. Scan methods on discovered bridges
+    // =========================================================
+    function scanMethods() {
+        log('[*] Phase 2: Probing @JavascriptInterface methods...', 'info');
+        var found = 0;
+
+        report.bridges.forEach(function(bridge) {
+            var obj = window[bridge.name];
+            if (!obj) return;
+
+            // Check known methods
+            KNOWN_METHODS.forEach(function(m) {
+                try {
+                    if (typeof obj[m.name] === 'function') {
+                        report.methods.push({
+                            bridge: bridge.name,
+                            method: m.name,
+                            risk: m.risk,
+                            desc: m.desc,
+                            callable: true
+                        });
+                        var riskTag = m.risk === 'high' ? '[!!!]' : m.risk === 'med' ? '[!!]' : '[!]';
+                        var riskCls = m.risk === 'high' ? 'found' : m.risk === 'med' ? 'warn' : 'info';
+                        log(riskTag + ' ' + bridge.name + '.' + m.name + '() — ' + m.desc, riskCls);
+                        found++;
+                    }
+                } catch(e) {}
+            });
+
+            // Try to enumerate unknown methods
+            try {
+                var knownNames = KNOWN_METHODS.map(function(m) { return m.name; });
+                for (var k in obj) {
+                    if (knownNames.indexOf(k) === -1 && typeof obj[k] === 'function') {
+                        report.methods.push({
+                            bridge: bridge.name,
+                            method: k,
+                            risk: 'unknown',
+                            desc: 'Undocumented method (discovered by enumeration)',
+                            callable: true
+                        });
+                        log('[?] ' + bridge.name + '.' + k + '() — unknown method', 'warn');
+                        found++;
+                    }
+                }
+            } catch(e) {}
+        });
+
+        log('[*] Phase 2 complete: ' + found + ' method(s) callable', found > 0 ? 'found' : 'safe');
+        return found;
+    }
+
+    // =========================================================
+    // 5. Active probes (safe, read-only operations)
+    // =========================================================
+    function activeProbes() {
+        log('[*] Phase 3: Active probes (read-only)...', 'info');
+        var probeResults = [];
+
+        // Probe 1: getProductParams — leaks user/device info
+        try {
+            if (window.webkit && typeof webkit.getProductParams === 'function') {
+                var params = webkit.getProductParams();
+                if (params && params.length > 0) {
+                    var parsed = null;
+                    try { parsed = JSON.parse(params); } catch(e) {}
+                    probeResults.push({
+                        probe: 'getProductParams',
+                        status: 'LEAKED',
+                        dataLength: params.length,
+                        preview: params.substring(0, 200),
+                        parsed: parsed,
+                        risk: 'high'
+                    });
+                    log('[!!!] DATA LEAK via getProductParams():', 'found');
+                    log('      ' + params.substring(0, 150) + (params.length > 150 ? '...' : ''), 'found');
+
+                    if (parsed) {
+                        if (parsed.header && parsed.header.user_id)
+                            log('      user_id: ' + parsed.header.user_id, 'found');
+                        if (parsed.header && parsed.header.token)
+                            log('      token: ' + parsed.header.token.substring(0, 20) + '...', 'found');
+                    }
+                } else {
+                    probeResults.push({ probe: 'getProductParams', status: 'EMPTY', risk: 'low' });
+                    log('[*] getProductParams() returned empty', 'info');
+                }
+            }
+        } catch(e) {
+            probeResults.push({ probe: 'getProductParams', status: 'ERROR', error: e.message });
+            log('[*] getProductParams() error: ' + e.message, 'dim');
+        }
+
+        // Probe 2: Check if weChatCycle can be called (don't actually call it with real URL)
+        try {
+            if (window.webkit && typeof webkit.weChatCycle === 'function') {
+                probeResults.push({
+                    probe: 'weChatCycle',
+                    status: 'CALLABLE',
+                    risk: 'high',
+                    note: 'Can set global PayConstant.referer — persistent URL injection'
+                });
+                log('[!!!] weChatCycle() is callable — persistent URL injection possible', 'found');
+            }
+        } catch(e) {}
+
+        // Probe 3: Check twecallResult — WeChat MiniProgram hijack
+        try {
+            if (window.webkit && typeof webkit.twecallResult === 'function') {
+                probeResults.push({
+                    probe: 'twecallResult',
+                    status: 'CALLABLE',
+                    risk: 'high',
+                    note: 'Can launch arbitrary WeChat MiniProgram (phishing)'
+                });
+                log('[!!!] twecallResult() is callable — WeChat MiniProgram hijack possible', 'found');
+            }
+        } catch(e) {}
+
+        // Probe 4: Check useVas — device state modification
+        try {
+            if (window.webkit && typeof webkit.useVas === 'function') {
+                probeResults.push({
+                    probe: 'useVas',
+                    status: 'CALLABLE',
+                    risk: 'high',
+                    note: 'Can modify device telephoneCallInfoStatus or navigate to device list'
+                });
+                log('[!!!] useVas() is callable — device state modification possible', 'found');
+            }
+        } catch(e) {}
+
+        report.probes = probeResults;
+        log('[*] Phase 3 complete: ' + probeResults.length + ' probe(s) executed', 'info');
+        return probeResults;
+    }
+
+    // =========================================================
+    // 6. Render results
+    // =========================================================
+    function renderSummary() {
+        var highCount = report.methods.filter(function(m) { return m.risk === 'high'; }).length;
+        var medCount  = report.methods.filter(function(m) { return m.risk === 'med'; }).length;
+        var lowCount  = report.methods.filter(function(m) { return m.risk === 'low'; }).length;
+        var leaks     = report.probes.filter(function(p) { return p.status === 'LEAKED'; }).length;
+
+        var statusEl = document.getElementById('scan-status');
+        var badgeEl  = document.getElementById('scan-badge');
+
+        if (report.bridges.length === 0) {
+            statusEl.textContent = 'No JSBridge Found';
+            badgeEl.textContent = 'SAFE';
+            badgeEl.className = 'badge badge-green';
+            report.risk = 'NONE';
+            return;
+        }
+
+        if (highCount > 0 || leaks > 0) {
+            statusEl.textContent = 'Critical Risk — ' + highCount + ' high-risk method(s)';
+            badgeEl.textContent = 'CRITICAL';
+            badgeEl.className = 'badge badge-red';
+            report.risk = 'CRITICAL';
+        } else if (medCount > 0) {
+            statusEl.textContent = 'Medium Risk';
+            badgeEl.textContent = 'MEDIUM';
+            badgeEl.className = 'badge badge-yellow';
+            report.risk = 'MEDIUM';
+        } else {
+            statusEl.textContent = 'Low Risk';
+            badgeEl.textContent = 'LOW';
+            badgeEl.className = 'badge badge-green';
+            report.risk = 'LOW';
+        }
+
+        var grid = document.getElementById('summary-grid');
+        grid.style.display = 'grid';
+        grid.innerHTML =
+            '<div class="summary-item"><div class="summary-num" style="color:#58a6ff">' + report.bridges.length + '</div><div class="summary-label">Bridges</div></div>' +
+            '<div class="summary-item"><div class="summary-num" style="color:#f85149">' + highCount + '</div><div class="summary-label">High Risk</div></div>' +
+            '<div class="summary-item"><div class="summary-num" style="color:#d29922">' + medCount + '</div><div class="summary-label">Medium Risk</div></div>' +
+            '<div class="summary-item"><div class="summary-num" style="color:#3fb950">' + (lowCount + report.methods.filter(function(m){return m.risk==='unknown';}).length) + '</div><div class="summary-label">Low / Unknown</div></div>';
+    }
+
+    function renderBridges() {
+        if (report.bridges.length === 0) return;
+        var card = document.getElementById('bridge-card');
+        card.style.display = 'block';
+        var list = document.getElementById('bridge-list');
+        report.bridges.forEach(function(b) {
+            var d = document.createElement('div');
+            d.className = 'method-item';
+            d.innerHTML = '<span class="method-name found">window.' + b.name + '</span>' +
+                          '<span class="badge badge-red">' + b.source.split(' ')[0] + '</span>';
+            list.appendChild(d);
+        });
+    }
+
+    function renderMethods() {
+        if (report.methods.length === 0) return;
+        var card = document.getElementById('methods-card');
+        card.style.display = 'block';
+        var list = document.getElementById('methods-list');
+
+        var sorted = report.methods.slice().sort(function(a, b) {
+            var order = { high: 0, med: 1, unknown: 2, low: 3 };
+            return (order[a.risk] || 9) - (order[b.risk] || 9);
+        });
+
+        sorted.forEach(function(m) {
+            var riskCls = m.risk === 'high' ? 'risk-high' : m.risk === 'med' ? 'risk-med' : 'risk-low';
+            var riskLabel = m.risk.toUpperCase();
+            var d = document.createElement('div');
+            d.className = 'method-item';
+            d.innerHTML =
+                '<div><span class="method-name">' + m.bridge + '.' + m.name + '()</span>' +
+                '<div style="font-size:11px;color:#8b949e;margin-top:2px">' + m.desc + '</div></div>' +
+                '<span class="badge ' + (m.risk === 'high' ? 'badge-red' : m.risk === 'med' ? 'badge-yellow' : 'badge-gray') + '">' + riskLabel + '</span>';
+            list.appendChild(d);
+        });
+    }
+
+    function renderProbes() {
+        if (report.probes.length === 0) return;
+        var card = document.getElementById('probe-card');
+        card.style.display = 'block';
+        var list = document.getElementById('probe-list');
+
+        report.probes.forEach(function(p) {
+            var d = document.createElement('div');
+            d.className = 'log-line';
+            if (p.status === 'LEAKED') {
+                d.className += ' found';
+                d.textContent = '[LEAK] ' + p.probe + ': ' + (p.preview || '').substring(0, 100);
+            } else if (p.status === 'CALLABLE') {
+                d.className += ' warn';
+                d.textContent = '[RISK] ' + p.probe + ': ' + p.note;
+            } else {
+                d.className += ' dim';
+                d.textContent = '[OK] ' + p.probe + ': ' + p.status;
+            }
+            list.appendChild(d);
+        });
+    }
+
+    // =========================================================
+    // 7. Export
+    // =========================================================
+    window.exportReport = function() {
+        var json = JSON.stringify(report, null, 2);
+        var blob = new Blob([json], { type: 'application/json' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'jsbridge_scan_' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+        a.click();
+    };
+
+    window.toggleLog = function() {
+        var el = document.getElementById('log-container');
+        el.classList.toggle('show');
+    };
+
+    // =========================================================
+    // Run scan
+    // =========================================================
+    log('=== JSBridge Security Scanner ===', 'info');
+    log('Time: ' + report.timestamp, 'dim');
+    log('UA: ' + navigator.userAgent, 'dim');
+    log('URL: ' + location.href, 'dim');
+    log('', 'dim');
+
+    var bridgeCount = scanBridges();
+    log('', 'dim');
+    var methodCount = scanMethods();
+    log('', 'dim');
+    var probeResults = activeProbes();
+    log('', 'dim');
+    log('=== Scan Complete ===', 'info');
+
+    renderSummary();
+    renderBridges();
+    renderMethods();
+    renderProbes();
+})();
+</script>
+</body>
+</html>
